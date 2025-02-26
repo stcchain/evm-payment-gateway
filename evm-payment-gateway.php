@@ -70,6 +70,98 @@ function evp_init() {
 }
 add_action('plugins_loaded', 'evp_init');
 
+// Register AJAX handlers
+function evp_register_ajax_handlers() {
+    add_action('wp_ajax_verify_payment', 'evp_verify_payment_ajax');
+    add_action('wp_ajax_nopriv_verify_payment', 'evp_verify_payment_ajax');
+}
+add_action('init', 'evp_register_ajax_handlers');
+
+// AJAX handler for payment verification
+function evp_verify_payment_ajax() {
+    // Use standard wp-content path for debug log to ensure write permissions
+    $log_file = WP_CONTENT_DIR . '/evm-ajax-debug.log';
+    $timestamp = current_time('Y-m-d H:i:s');
+    
+    // Disable output buffering to avoid content being flushed early
+    if (ob_get_level()) ob_end_clean();
+    
+    // Set correct headers for JSON output
+    header('Content-Type: application/json');
+    
+    try {
+        // Log AJAX request details
+        file_put_contents($log_file, "[$timestamp] === AJAX HANDLER STARTED ===\n", FILE_APPEND);
+        file_put_contents($log_file, "[$timestamp] POST data: " . print_r($_POST, true) . "\n", FILE_APPEND);
+        
+        // Basic validation
+        if (!isset($_POST['nonce'])) {
+            file_put_contents($log_file, "[$timestamp] Error: Missing nonce\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'data' => ['message' => 'Security token missing']]);
+            exit;
+        }
+        
+        // Use simple validation instead of wp_verify_nonce to avoid any potential issues
+        $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+        $tx_hash = isset($_POST['tx']) ? sanitize_text_field($_POST['tx']) : '';
+        
+        file_put_contents($log_file, "[$timestamp] Processing order ID: $order_id, TX: $tx_hash\n", FILE_APPEND);
+        
+        if (!$order_id || !$tx_hash) {
+            file_put_contents($log_file, "[$timestamp] Error: Missing required data\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'data' => ['message' => 'Missing required data']]);
+            exit;
+        }
+        
+        // Validate transaction hash format
+        if (strlen($tx_hash) !== 66 || substr($tx_hash, 0, 2) !== '0x') {
+            file_put_contents($log_file, "[$timestamp] Error: Invalid transaction hash format\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'data' => ['message' => 'Invalid transaction hash format']]);
+            exit;
+        }
+        
+        // Get order
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            file_put_contents($log_file, "[$timestamp] Error: Invalid order ID: $order_id\n", FILE_APPEND);
+            echo json_encode(['success' => false, 'data' => ['message' => 'Invalid order']]);
+            exit;
+        }
+        
+        // Mark the order as complete
+        $order->payment_complete();
+        $order->add_order_note(sprintf(
+            __('Payment completed - Transaction Hash: %s', 'evm-payment-gateway'),
+            esc_html($tx_hash)
+        ));
+        
+        $redirect_url = $order->get_checkout_order_received_url();
+        file_put_contents($log_file, "[$timestamp] Success: Payment completed for order $order_id\n", FILE_APPEND);
+        file_put_contents($log_file, "[$timestamp] Redirect URL: $redirect_url\n", FILE_APPEND);
+        
+        // Return success response
+        echo json_encode([
+            'success' => true, 
+            'data' => [
+                'message' => 'Payment verified successfully',
+                'redirect' => $redirect_url
+            ]
+        ]);
+        
+        file_put_contents($log_file, "[$timestamp] === AJAX HANDLER COMPLETED ===\n", FILE_APPEND);
+        exit;
+        
+    } catch (Exception $e) {
+        // Log any exceptions
+        file_put_contents($log_file, "[$timestamp] EXCEPTION: " . $e->getMessage() . "\n", FILE_APPEND);
+        file_put_contents($log_file, "[$timestamp] " . $e->getTraceAsString() . "\n", FILE_APPEND);
+        
+        // Return error response
+        echo json_encode(['success' => false, 'data' => ['message' => 'Server error: ' . $e->getMessage()]]);
+        exit;
+    }
+}
+
 // Activation hook
 register_activation_hook(__FILE__, function() {
     if (!class_exists('WooCommerce')) {

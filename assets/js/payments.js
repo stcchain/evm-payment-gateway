@@ -1,176 +1,196 @@
-(function($) {
-    'use strict';
-
-    class EVMPayment {
-        constructor() {
-            this.web3 = null;
-            this.isInitialized = false;
-            this.initializeEventListeners();
+jQuery(document).ready(function($) {
+  const payButton = document.getElementById('evm-payment-button');
+  if (payButton) {
+    payButton.addEventListener('click', async function() {
+      try {
+        // Check if MetaMask is installed
+        if (typeof window.ethereum === 'undefined') {
+          alert('MetaMask is not installed\! Please install MetaMask to make payments.');
+          return;
         }
-
-        async initializeWeb3() {
-            try {
-                if (!window.ethereum) {
-                    throw new Error('MetaMask not detected! Please install MetaMask first.');
-                }
-
-                this.web3 = new Web3(window.ethereum);
-                await window.ethereum.request({ method: 'eth_requestAccounts' });
-                this.isInitialized = true;
-
-                // Setup network change listener
-                window.ethereum.on('chainChanged', () => {
-                    window.location.reload();
-                });
-
-                // Setup account change listener
-                window.ethereum.on('accountsChanged', () => {
-                    window.location.reload();
-                });
-
-                return true;
-            } catch (error) {
-                this.showError(error.message);
-                return false;
+        
+        // Request account access
+        const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+        const account = accounts[0];
+        
+        // Show processing state
+        payButton.disabled = true;
+        payButton.innerHTML = 'Processing...';
+        
+        // Get payment amount
+        const amount = evmPaymentConfig.amount;
+        
+        // Load Web3
+        const web3 = new Web3(window.ethereum);
+        
+        // Get contract details
+        const contractAddress = evmPaymentData.contractAddress;
+        const targetAddress = evmPaymentData.targetAddress;
+        const decimals = parseInt(evmPaymentData.tokenDecimals);
+        
+        // Calculate token amount (with proper decimals)
+        const factor = new web3.utils.BN(10).pow(new web3.utils.BN(decimals));
+        const value = new web3.utils.BN(Math.round(amount * 100)).mul(factor).div(new web3.utils.BN(100));
+        
+        // Create contract instance
+        const contract = new web3.eth.Contract(evmPaymentData.abiArray, contractAddress);
+        
+        // Execute the transfer
+        const result = await contract.methods.transfer(targetAddress, value.toString()).send({ from: account });
+        
+        // Notify server of payment (continue even if this fails)
+        try {
+          $.post(
+            evmPaymentData.ajaxUrl,
+            {
+              action: 'verify_payment',
+              nonce: evmPaymentData.nonce,
+              order_id: evmPaymentConfig.orderId,
+              tx: result.transactionHash
             }
+          );
+        } catch (ajaxError) {
+          console.error('Server notification error:', ajaxError);
         }
-
-        async validateNetwork() {
-            try {
-                const networkId = await this.web3.eth.net.getId();
-                if (String(networkId) !== evmPaymentData.networkId) {
-                    throw new Error(`Please switch to network ${evmPaymentData.networkId}`);
-                }
-                return true;
-            } catch (error) {
-                this.showError(error.message);
-                return false;
-            }
-        }
-
-        async requestPayment(amount) {
-            try {
-                if (!this.isInitialized && !await this.initializeWeb3()) {
-                    return;
-                }
-
-                if (!await this.validateNetwork()) {
-                    return;
-                }
-
-                const contract = new this.web3.eth.Contract(
-                    evmPaymentData.abiArray,
-                    evmPaymentData.contractAddress
-                );
-
-                const accounts = await this.web3.eth.getAccounts();
-                const tokenAmount = this.calculateTokenAmount(amount);
-
-                console.log('Payment details:', {
-                    from: accounts[0],
-                    to: evmPaymentData.targetAddress,
-                    amount: tokenAmount,
-                    decimals: evmPaymentData.tokenDecimals
-                });
-
-                const result = await contract.methods.transfer(
-                    evmPaymentData.targetAddress,
-                    tokenAmount
-                ).send({
-                    from: accounts[0]
-                });
-
-                console.log('Transaction result:', result);
-                await this.verifyPayment(result.transactionHash);
-
-            } catch (error) {
-                if (error.code === 4001) {
-                    this.showError('Transaction was rejected by user.');
-                } else {
-                    this.showError(error.message);
-                }
-                console.error('Payment error:', error);
-            }
-        }
-
-        calculateTokenAmount(amount) {
-            try {
-                const decimals = parseInt(evmPaymentData.tokenDecimals);
-                const multiplier = new this.web3.utils.BN(10).pow(new this.web3.utils.BN(decimals));
-                const rawAmount = new this.web3.utils.BN(Math.round(amount * 100)).mul(multiplier).div(new this.web3.utils.BN(100));
-                return rawAmount.toString();
-            } catch (error) {
-                console.error('Calculate amount error:', error);
-                throw new Error('Error calculating token amount');
-            }
-        }
-
-        async verifyPayment(txHash) {
-            try {
-                const data = new FormData();
-                data.append('action', 'verify_evm_payment');
-                data.append('nonce', evmPaymentData.nonce);
-                data.append('order_id', evmPaymentConfig.orderId);
-                data.append('tx', txHash);
-
-                console.log('Verifying payment:', {
-                    txHash,
-                    orderId: evmPaymentConfig.orderId
-                });
-
-                const response = await fetch(evmPaymentData.ajaxUrl, {
-                    method: 'POST',
-                    body: data,
-                    credentials: 'same-origin'
-                });
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const result = await response.json();
-                console.log('Verification response:', result);
-
-                if (result.success) {
-                    this.showSuccess('Payment successful! Redirecting...');
-                    setTimeout(() => {
-                        window.location.href = result.data.redirect;
-                    }, 2000);
-                } else {
-                    throw new Error(result.data.message || 'Payment verification failed');
-                }
-            } catch (error) {
-                this.showError(`Payment verification failed: ${error.message}`);
-                console.error('Verification error:', error);
-            }
-        }
-
-        showError(message) {
-            const errorDiv = document.getElementById('evm-payment-error');
-            if (errorDiv) {
-                errorDiv.textContent = message;
-                errorDiv.style.display = 'block';
-            }
-        }
-
-        showSuccess(message) {
-            const errorDiv = document.getElementById('evm-payment-error');
-            if (errorDiv) {
-                errorDiv.textContent = message;
-                errorDiv.style.display = 'block';
-                errorDiv.classList.remove('woocommerce-error');
-                errorDiv.classList.add('woocommerce-message');
-            }
-        }
-
-        initializeEventListeners() {
-            document.addEventListener('DOMContentLoaded', () => {
-                this.initializeWeb3().catch(console.error);
-            });
-        }
+        
+        // Show success popup instead of redirecting
+        showSuccessPopup(result.transactionHash);
+        
+      } catch (error) {
+        // Reset button state
+        payButton.disabled = false;
+        payButton.innerHTML = 'Pay with MetaMask';
+        
+        // Show error
+        const errorMessage = error.code === 4001 ? 'Transaction was rejected by user' : error.message;
+        const errorDiv = document.getElementById('evm-payment-error');
+        errorDiv.textContent = errorMessage;
+        errorDiv.style.display = 'block';
+        errorDiv.className = 'woocommerce-error';
+        
+        console.error('Payment error:', error);
+      }
+    });
+  }
+  
+  // Create and show a centered popup with payment success details
+  function showSuccessPopup(txHash) {
+    // Create modal container
+    const modal = document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.style.left = '0';
+    modal.style.top = '0';
+    modal.style.width = '100%';
+    modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.7)';
+    modal.style.zIndex = '9999';
+    modal.style.display = 'flex';
+    modal.style.alignItems = 'center';
+    modal.style.justifyContent = 'center';
+    
+    // Create modal content
+    const modalContent = document.createElement('div');
+    modalContent.style.backgroundColor = '#ffffff';
+    modalContent.style.borderRadius = '8px';
+    modalContent.style.padding = '30px';
+    modalContent.style.width = '80%';
+    modalContent.style.maxWidth = '500px';
+    modalContent.style.maxHeight = '80%';
+    modalContent.style.overflowY = 'auto';
+    modalContent.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
+    modalContent.style.textAlign = 'center';
+    
+    // Add success icon
+    const icon = document.createElement('div');
+    icon.innerHTML = '✅';
+    icon.style.fontSize = '48px';
+    icon.style.marginBottom = '20px';
+    modalContent.appendChild(icon);
+    
+    // Add title
+    const title = document.createElement('h2');
+    title.innerHTML = 'Payment Successful\!';
+    title.style.fontSize = '24px';
+    title.style.marginBottom = '20px';
+    title.style.color = '#4CAF50';
+    modalContent.appendChild(title);
+    
+    // Add message
+    const message = document.createElement('p');
+    message.innerHTML = 'Your payment has been confirmed on the blockchain.';
+    message.style.marginBottom = '15px';
+    modalContent.appendChild(message);
+    
+    // Add transaction ID
+    const txIdContainer = document.createElement('div');
+    txIdContainer.style.padding = '10px';
+    txIdContainer.style.backgroundColor = '#f5f5f5';
+    txIdContainer.style.borderRadius = '4px';
+    txIdContainer.style.marginBottom = '25px';
+    txIdContainer.style.wordBreak = 'break-all';
+    txIdContainer.style.fontSize = '14px';
+    
+    const txIdLabel = document.createElement('div');
+    txIdLabel.innerHTML = 'Transaction ID:';
+    txIdLabel.style.fontWeight = 'bold';
+    txIdLabel.style.marginBottom = '5px';
+    txIdContainer.appendChild(txIdLabel);
+    
+    const txIdValue = document.createElement('div');
+    txIdValue.innerHTML = txHash;
+    txIdContainer.appendChild(txIdValue);
+    modalContent.appendChild(txIdContainer);
+    
+    // Add close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = 'Close';
+    closeButton.style.padding = '10px 25px';
+    closeButton.style.backgroundColor = '#4CAF50';
+    closeButton.style.color = 'white';
+    closeButton.style.border = 'none';
+    closeButton.style.borderRadius = '4px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.style.fontSize = '16px';
+    closeButton.style.fontWeight = 'bold';
+    closeButton.style.marginRight = '10px';
+    closeButton.addEventListener('click', function() {
+      document.body.removeChild(modal);
+    });
+    modalContent.appendChild(closeButton);
+    
+    // Add "View Order Details" button
+    const viewOrderButton = document.createElement('button');
+    viewOrderButton.innerHTML = 'View Order Details';
+    viewOrderButton.style.padding = '10px 25px';
+    viewOrderButton.style.backgroundColor = '#2196F3';
+    viewOrderButton.style.color = 'white';
+    viewOrderButton.style.border = 'none';
+    viewOrderButton.style.borderRadius = '4px';
+    viewOrderButton.style.cursor = 'pointer';
+    viewOrderButton.style.fontSize = '16px';
+    viewOrderButton.style.fontWeight = 'bold';
+    viewOrderButton.addEventListener('click', function() {
+      window.location.href = '/index.php/checkout/order-received/' + evmPaymentConfig.orderId + '/';
+    });
+    modalContent.appendChild(viewOrderButton);
+    
+    // Add modal to page
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+    
+    // Reset button state
+    const payButton = document.getElementById('evm-payment-button');
+    if (payButton) {
+      payButton.disabled = false;
+      payButton.innerHTML = 'Payment Complete';
     }
-
-    // Initialize and expose to window
-    window.evmPayment = new EVMPayment();
-
-})(jQuery);
+    
+    // Also update the message area
+    const errorDiv = document.getElementById('evm-payment-error');
+    if (errorDiv) {
+      errorDiv.textContent = 'Payment confirmed\! Transaction ID: ' + txHash;
+      errorDiv.style.display = 'block';
+      errorDiv.className = 'woocommerce-message';
+    }
+  }
+});
