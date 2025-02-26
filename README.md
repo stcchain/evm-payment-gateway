@@ -4,7 +4,7 @@ A secure WordPress plugin enabling EVM-compatible token payments through WooComm
 
 ## Features
 
-- Support for any EVM-compatible blockchain (Ethereum, BSC, Polygon, etc.)
+- Support for any EVM-compatible blockchain (Private/Public Besu, Public Ethereum, BSC, Polygon, etc.)
 - MetaMask integration for secure transactions
 - Configurable token contract settings
 - Transaction verification and order status management
